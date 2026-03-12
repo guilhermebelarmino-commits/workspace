@@ -1,293 +1,587 @@
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------- Step 2 -------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
 declare f_start date;
 declare f_start_m_1 date;
 set f_start = (select min(f_mes_acc_carga) from `SBOX_CREDITS_SB.RBA_TC_MLB_UPSELL_BACKTEST_BAU_1_PECASTANHO`);
 set f_start_m_1 = date(f_start - interval 1 month);
 
 
-create or replace table `SBOX_CREDITS_SB.RBA_TC_MLB_UPSELL_BACKTEST_BAU_2_PECASTANHO`
+create or replace temp table RBA_TC_BACKTEST
 as
-with
-fonte00 as (
-  select
-    *
-  from `SBOX_CREDITS_SB.RBA_TC_MLB_UPSELL_BACKTEST_BAU_1_PECASTANHO`
-),
-fonte01 as ( -- modelo bhv
-  select distinct
-    sco.creation_date_dt as valid_from_dt
-    ,coalesce(lag(sco.creation_date_dt-1) over (partition by sco.cus_cust_id_borrower order by sco.creation_date_dt desc), current_date('-03')) as valid_to_dt
-    ,sco.cus_cust_id_borrower AS user_id
-    ,sco.crd_version
-    ,co.crd_internal_rating AS rating_behavior_tc_acc
-    ,sco.crd_score
-  from `WHOWNER.BT_CRD_CREDITS_RISK_SCORING` AS sco
-  left join `SBOX_CREDITSSHARED.CC_PARAM_CUTOFFS` AS co
-    on sco.crd_model = co.crd_model
-    and sco.crd_score > co.crd_cutoff_value_min
-    and sco.crd_score <= co.crd_cutoff_value_max
-    and sco.crd_version = co.crd_version
-  where 1=1
-    and sco.sit_site_id = 'MLB'
-    and sco.crd_model = 'consumers_behavior_credit_card'
-    and co.crd_model = 'consumers_behavior_credit_card'
-    and sco.creation_date_dt >= f_start
-    and sco.cus_cust_id_borrower in (select distinct user_id from fonte00)
-),
-fonte02 as ( -- modelo upsell
-  select distinct
-    sco.creation_date_dt as valid_from_dt
-    ,coalesce(lag(sco.creation_date_dt-1) over (partition by sco.cus_cust_id_borrower order by sco.creation_date_dt desc), current_date('-03')) as valid_to_dt
-    ,sco.cus_cust_id_borrower AS user_id
-    ,sco.crd_version
-    ,co.crd_internal_rating AS rating_upsell_tc_acc
-    ,sco.crd_score
-  from `WHOWNER.BT_CRD_CREDITS_RISK_SCORING` AS sco
-  left join `SBOX_CREDITSSHARED.CC_PARAM_CUTOFFS` AS co
-    on sco.crd_model = co.crd_model
-    and sco.crd_score > co.crd_cutoff_value_min
-    and sco.crd_score <= co.crd_cutoff_value_max
-    and sco.crd_version = co.crd_version
-  where 1=1
-    and sco.sit_site_id = 'MLB'
-    and sco.crd_model = 'consumers_upsell_tc'
-    and co.crd_model = 'consumers_upsell_tc'
-    and sco.creation_date_dt >= f_start
-    and sco.cus_cust_id_borrower in (select distinct user_id from fonte00)
-),
-fonte03 as ( -- VU NISE y renta
-  select
-     valid_from_dt
-    ,valid_to_dt
-    ,cus_cust_id as user_id
-    ,case when valid_to_dt >= date('2024-07-01') then
-      case
-        when regexp_contains(modeling_income_nise_tag, 'PLATINUM') then concat('a. ', modeling_income_nise_tag)
-        when regexp_contains(modeling_income_nise_tag, 'GOLD') then concat('b. ', modeling_income_nise_tag)
-        when regexp_contains(modeling_income_nise_tag, 'SILVER') then concat('c. ', modeling_income_nise_tag)
-        when regexp_contains(modeling_income_nise_tag, 'BRONZE') then concat('d. ', modeling_income_nise_tag)
-        else 'e. OTROS' end
-    else null end as nise
-    ,case when valid_to_dt >= date('2024-07-01') then modeling_income_amt else null end as renta_monto
-    ,case when valid_to_dt >= date('2024-07-01') then modeling_income_source_tag else null end as renta_source
-    ,case
-      when regexp_contains(nise_tag, 'PLATINUM') then concat('a. ', nise_tag)
-      when regexp_contains(nise_tag, 'GOLD') then concat('b. ', nise_tag)
-      when regexp_contains(nise_tag, 'SILVER') then concat('c. ', nise_tag)
-      when regexp_contains(nise_tag, 'BRONZE') then concat('d. ', nise_tag)
-      else 'e. OTROS' end as nise_acc
-    ,assumed_income_amt as renta_monto_acc
-    ,assumed_income_source_tag as renta_source_acc
-  from `WHOWNER.BT_VU_ASSUMED_INCOME` 
-  where 1=1
-    and sit_site_id = 'MLB'
-    and valid_to_dt >= f_start
-    and cus_cust_id in (select distinct user_id from fonte00)
-),
-fonte04 as ( -- marca Sellers
-  select
-     valid_from_dt
-    ,valid_to_dt
-    ,cus_cust_id as user_id
-    ,case when risk_management_tag = 'MERCHANT' then 1 else 0 end as flag_sellers
-  from `WHOWNER.LK_VU_PROSPECT_UNIVERSE`
-  where 1=1
-    and sit_site_id = 'MLB'
-    and cus_cust_id in (select distinct user_id from fonte00)
-    -- and cus_cust_id = 353789723
-    and valid_to_dt >= f_start
-),
-fonte05 as ( -- fecha emision
-  select
-     cus_cust_id as user_id
-    ,date(ccard_account_creation_dt) as f_emision_dt
-  from `WHOWNER.BT_CCARD_ACCOUNT`
-  where 1=1
-    and sit_site_id = 'MLB'
-    and ccard_account_prov_id is not null
-    and cus_cust_id in (select distinct user_id from fonte00)
-),
-fonte06 as ( -- VU RCI
-  select
-     valid_from_dt
-    ,valid_to_dt
-    ,cus_cust_id as user_id
-    ,real_use_level_val as porc_uso_real_tc
-  from `WHOWNER.BT_VU_RCI`
-  where 1=1
-    and sit_site_id = 'MLB'
-    and crd_prod_def_type_sk = 3
-    and valid_from_dt >= f_start
-    and cus_cust_id in (select distinct user_id from fonte00)
-),
-fonte07 as ( -- scores BVS y Serasa
-  select
-     period_dt as f_cartera
-    ,cus_cust_id as user_id
-    ,serasa_score_val as score_serasa
-    ,bvs_score_val as score_bvs
-  from `WHOWNER.BT_VU_PRESUMED_INCOME`
-  where 1=1
-    and sit_site_id = 'MLB'
-    and cus_cust_id in (select distinct user_id from fonte00)
-    and period_dt >= f_start_m_1
-),
-fonte08 as ( -- productos Credit VU
-  select
-     crd.valid_from_dt
-    ,crd.valid_to_dt
-    ,crd.cus_cust_id as user_id
-    ,crd.crd_prod_def_type_sk as product_id
-    ,prod.crd_prod_def_type_abv as product_abv
-  from `WHOWNER.BT_VU_CREDIT` crd
-  left join `WHOWNER.LK_VU_CREDIT_PRODUCTS` prod
-  on crd.crd_prod_def_type_sk = prod.crd_prod_def_type_sk
-  where 1=1
-    and crd.sit_site_id = 'MLB'
-    and crd.crd_credit_status <> 'PENDING'
-    and crd.cus_cust_id in (select distinct user_id from fonte00)
-),
-fonte09 as ( -- SCR
-  select
-     valid_from_dt
-    ,valid_to_dt
-    ,dt_base_scr
-    ,user_id
-    ,cant_ifs
-    ,deuda_30d_tc
-    ,deuda_30d_clean
-    ,deuda_30d_garantia
-    ,deuda_30d_total
-    ,deuda_all_tc
-    ,deuda_all_clean
-    ,deuda_all_garantia
-    ,deuda_all_total
-    ,deuda_venc_over00_clean
-    ,deuda_venc_over00_tc
-    ,deuda_venc_over00_garantia
-    ,deuda_venc_over00_total
-    ,deuda_venc_over30_tc
-    ,deuda_venc_over30_clean
-    ,deuda_venc_over30_garantia
-    ,deuda_venc_over30_total
-  from `SBOX_CREDITS_SB.RBA_CROSS_MLB_SCR_CARTERA_PECASTANHO`
-  where 1=1
-    and valid_to_dt >= f_start_m_1
-),
-fonte10 as ( -- VU NISE y renta modelling
-  select
-     valid_from_dt
-    ,valid_to_dt
-    ,user_id
-    ,nise
-    ,renta_monto
-    ,renta_source
-  from fonte03
-  where 1=1
-    and nise is not null
-  qualify row_number() over (partition by user_id order by valid_from_dt asc) = 1
-),
-joins00 as (
-  select
-     acc.* except(rating_bhv_tc_acc)
-    -- / --
-    ,coalesce(acc.rating_bhv_tc_acc, bhv.rating_behavior_tc_acc) as rating_bhv_tc_acc
-    ,upsell.rating_upsell_tc_acc
-    ,coalesce(renta.nise, renta_hist.nise) as nise
-    ,coalesce(renta.renta_monto, renta_hist.renta_monto) as renta_monto
-    ,coalesce(renta.renta_source, renta_hist.renta_source) as renta_source
-    ,renta.nise_acc
-    ,renta.renta_monto_acc
-    ,renta.renta_source_acc
-    ,safe_cast(clasif.clasif as int64) as grupo_riesgo
-    ,sellers.flag_sellers
-    ,ccard.* except(user_id)
-    ,rci.* except(valid_from_dt, valid_to_dt, user_id)
-    ,scores.* except(f_cartera, user_id)
-    ,coalesce(param.rating_externo, 'G') as rating_externo
-    ,case
-      when coalesce(param.rating_externo, 'G') in ('A','B') then 'a. Muy bajo'
-      when coalesce(param.rating_externo, 'G') in ('C') then 'b. Bajo'
-      when coalesce(param.rating_externo, 'G') in ('D','E') then 'c. Medio'
-      when coalesce(param.rating_externo, 'G') in ('F') then 'd. Alto'
-      when coalesce(param.rating_externo, 'G') in ('G') then 'e. Muy alto'
-      else 'f. Otros' end as nivel_riesgo_externo
-    ,scr.* except(user_id, valid_from_dt, valid_to_dt)
-    ,if(ito.cus_cust_id is not null, 1, 0) as flag_fraude_ito
-    ,max(if(product_abv in ('LC','MXP','DE'), 1, 0)) as flag_crd_prod_cc
-    ,max(if(product_abv in ('TC','MTC'), 1, 0)) as flag_crd_prod_tc
-    ,max(if(product_abv in ('CF','PPV'), 1, 0)) as flag_crd_prod_mc
-    ,max(if(product_abv in ('SL'), 1, 0)) as flag_crd_prod_sl
-  from fonte00 acc
-  left join fonte01 bhv
-    on acc.user_id = bhv.user_id
-    and acc.f_acc_carga between bhv.valid_from_dt and bhv.valid_to_dt
-  left join fonte02 upsell
-    on acc.user_id = upsell.user_id
-    and acc.f_acc_carga between upsell.valid_from_dt and upsell.valid_to_dt
-  left join fonte03 renta
-    on acc.user_id = renta.user_id
-    and (acc.f_acc_carga >= renta.valid_from_dt and acc.f_acc_carga < renta.valid_to_dt)
-  left join fonte10 renta_hist
-    on acc.user_id = renta_hist.user_id
-  left join fonte04 sellers
-    on acc.user_id = sellers.user_id
-    and (acc.f_acc_carga >= sellers.valid_from_dt and acc.f_acc_carga < sellers.valid_to_dt)
-  left join fonte05 ccard
-    on acc.user_id = ccard.user_id
-  left join fonte06 rci
-    on acc.user_id = rci.user_id
-    and (acc.f_acc_carga >= rci.valid_from_dt and acc.f_acc_carga < rci.valid_to_dt)
-  left join `SBOX_CREDITS_SB.RBA_TC_MLB_CLASIF_BHV_UPSELL_PECASTANHO` clasif
-    on coalesce(acc.rating_bhv_tc_acc, bhv.rating_behavior_tc_acc) = clasif.bhv
-    and upsell.rating_upsell_tc_acc = clasif.upsell
-    and acc.f_mes_acc_carga between clasif.valid_from_dt and clasif.valid_to_dt
-  left join fonte07 scores
-    on acc.user_id = scores.user_id
-    and acc.f_mes_acc_carga = scores.f_cartera
-  left join `meli-bi-data.SBOX_CREDITS_SB.PARAM_RATING_EXT_GERAL` param
-    on (scores.score_serasa >= param.serasa_min and scores.score_serasa <= param.serasa_max)
-    and (scores.score_bvs >= param.bvs_min and scores.score_bvs <= param.bvs_max)
-  left join fonte08 crd
-    on acc.user_id = crd.user_id
-    and (acc.f_acc_carga >= crd.valid_from_dt and acc.f_acc_carga < crd.valid_to_dt)
-  left join `SBOX_COLLECTIONSDA.CCARD_MLB_USUARIOS_FRAUDE_DIC_2024` ito
-    on acc.user_id = ito.cus_cust_id
-  left join fonte09 scr
-    on acc.user_id = scr.user_id
-    and acc.f_acc_carga between scr.valid_from_dt and scr.valid_to_dt
-  group by all
-),
-saida00 as (
-  select
-    *
-    ,case
-      when f_acc_carga <= date('2024-02-01') then
-        case
-          when grupo_riesgo <= 1 then 'a. Muy bajo'
-          when grupo_riesgo <= 2 then 'b. Bajo'
-          when grupo_riesgo <= 6 then 'c. Medio'      
-          when grupo_riesgo <= 10 then 'd. Alto'
-          when grupo_riesgo <= 12 then 'e. Muy alto'
-          else 'f. a ver' end
-      else
-        case
-          when grupo_riesgo <= 2 then 'a. Muy bajo'
-          when grupo_riesgo <= 5 then 'b. Bajo'
-          when grupo_riesgo <= 7 then 'c. Medio'      
-          when grupo_riesgo <= 11 then 'd. Alto'
-          when grupo_riesgo <= 14 then 'e. Muy alto'
-          else 'f. a ver' end end as nivel_riesgo
-    ,case
-      when flag_crd_prod_cc = 1 and (flag_crd_prod_tc + flag_crd_prod_mc + flag_crd_prod_sl) = 0 then 'a. Solo CC'
-      when flag_crd_prod_tc = 1 and (flag_crd_prod_cc + flag_crd_prod_mc + flag_crd_prod_sl) = 0 then 'b. Solo TC'
-      when (flag_crd_prod_tc + flag_crd_prod_cc) = 2 and (flag_crd_prod_mc + flag_crd_prod_sl) = 0 then 'c. Solo CC+TC'
-      when (flag_crd_prod_tc + flag_crd_prod_cc) > 0 then 'd. Al menos CC+TC'
-      when (flag_crd_prod_tc + flag_crd_prod_cc) = 0 and (flag_crd_prod_mc + flag_crd_prod_sl) > 0 then 'e. Sin TC ni CC'
-      when (flag_crd_prod_tc + flag_crd_prod_cc + flag_crd_prod_mc + flag_crd_prod_sl) = 0 then 'f. Sin producto'
-      else 'g. Otro' end as status_producto
-  from joins00
+select
+  * except(rating_bhv_tc_acc)
+from `SBOX_CREDITS_SB.RBA_TC_MLB_UPSELL_BACKTEST_BAU_1_PECASTANHO`
+-- where 1=1
+--   and f_mes_acc_carga = '2024-10-01'
+--   and policy_subcategory = 'BAU'
+--   and user_id = 544537058
+-- limit 1
+;
+
+create or replace temp table VU_MODEL_RATING_BHV
+as
+select
+   valid_from_dt
+  ,valid_to_dt
+  ,cus_cust_id as user_id
+  ,internal_rating_tag as rating_bhv_tc_acc
+from `WHOWNER.BT_VU_MODEL_RATING`
+where 1=1
+  and sit_site_id = 'MLB'
+  and crd_model = 'CONSUMERS_BEHAVIOR_CREDIT_CARD'
+  and valid_to_dt >= f_start
+  and cus_cust_id in (select distinct user_id from RBA_TC_BACKTEST)
+;
+
+create or replace temp table VU_MODEL_RATING_UPSELL
+as
+select
+   valid_from_dt
+  ,valid_to_dt
+  ,cus_cust_id as user_id
+  ,internal_rating_tag as rating_upsell_tc_acc
+from `WHOWNER.BT_VU_MODEL_RATING`
+where 1=1
+  and sit_site_id = 'MLB'
+  and crd_model = 'CONSUMERS_UPSELL_TC'
+  and valid_to_dt >= f_start
+  and cus_cust_id in (select distinct user_id from RBA_TC_BACKTEST)
+;
+
+create or replace temp table VU_ASSUMED_INCOME
+as
+select
+   valid_from_dt
+  ,valid_to_dt
+  ,cus_cust_id as user_id
+  ,case
+    when nise_tag = 'PLATINUM' then concat('a. ', nise_tag)
+    when nise_tag = 'GOLD' then concat('b. ', nise_tag)
+    when nise_tag = 'SILVER' then concat('c. ', nise_tag)
+    when nise_tag = 'BRONZE' then concat('d. ', nise_tag)
+    else 'e. OTROS' end as nise_acc
+  ,assumed_income_amt as renta_monto_acc
+  ,assumed_income_source_tag as renta_source_acc
+from `WHOWNER.BT_VU_ASSUMED_INCOME` 
+where 1=1
+  and sit_site_id = 'MLB'
+  and valid_to_dt >= f_start
+  and cus_cust_id in (select distinct user_id from RBA_TC_BACKTEST)
+;
+
+create or replace temp table VU_ASSUMED_INCOME_MDL
+as
+select
+   period_dt
+  ,cus_cust_id as user_id
+  ,case
+    when nise_tag = 'PLATINUM' then concat('a. ', nise_tag)
+    when nise_tag = 'GOLD' then concat('b. ', nise_tag)
+    when nise_tag = 'SILVER' then concat('c. ', nise_tag)
+    when nise_tag = 'BRONZE' then concat('d. ', nise_tag)
+    else 'e. OTROS' end as nise
+  ,modeling_income_amt as renta_monto
+  ,modeling_income_source_tag as renta_source
+from `meli-bi-data.WHOWNER.BT_RMOD_CI_HISTORICAL_INCOME_RULE_MLB_2025`
+where 1=1
+  and period_dt >= f_start
+  and cus_cust_id in (select distinct user_id from RBA_TC_BACKTEST)
+;
+
+
+create or replace temp table VU_ASSUMED_INCOME_HOY
+as
+select
+   user_id
+  ,nise_acc as nise_hoy
+  ,renta_monto_acc as renta_monto_hoy
+  ,renta_source_acc as renta_source_hoy
+from VU_ASSUMED_INCOME
+where 1=1
+  and valid_to_dt = '2099-12-31'
+;
+
+create or replace temp table VU_PROSPECT
+as
+select
+   valid_from_dt
+  ,valid_to_dt
+  ,cus_cust_id as user_id
+  ,case when risk_management_tag = 'MERCHANT' then 1 else 0 end as flag_sellers
+from `WHOWNER.LK_VU_PROSPECT_UNIVERSE`
+where 1=1
+  and sit_site_id = 'MLB'
+  and valid_to_dt >= f_start
+  and cus_cust_id in (select distinct user_id from RBA_TC_BACKTEST)
+;
+
+create or replace temp table VU_RCI_TC
+as
+select
+   valid_from_dt
+  ,valid_to_dt
+  ,cus_cust_id as user_id
+  ,real_use_level_val as porc_uso_real_tc
+  ,real_rci_val as rci_real_tc
+  ,teoric_rci_val as rci_teorico_tc
+from `WHOWNER.BT_VU_RCI`
+where 1=1
+  and sit_site_id = 'MLB'
+  and crd_prod_def_type_sk = 3
+  and valid_to_dt >= f_start
+  and cus_cust_id in (select distinct user_id from RBA_TC_BACKTEST)
+;
+
+create or replace temp table VU_RCI_CC
+as
+select
+   valid_from_dt
+  ,valid_to_dt
+  ,cus_cust_id as user_id
+  ,real_rci_val as rci_real_cc
+  ,teoric_rci_val as rci_teorico_cc
+from `WHOWNER.BT_VU_RCI`
+where 1=1
+  and sit_site_id = 'MLB'
+  and crd_prod_def_type_sk = 2
+  and valid_to_dt >= f_start
+  and cus_cust_id in (select distinct user_id from RBA_TC_BACKTEST)
+;
+
+create or replace temp table VU_BUREAU
+as
+select
+   period_dt as f_cartera
+  ,cus_cust_id as user_id
+  ,serasa_score_val as score_serasa
+  ,bvs_score_val as score_bvs
+from `WHOWNER.BT_VU_PRESUMED_INCOME`
+where 1=1
+  and sit_site_id = 'MLB'
+  and period_dt >= f_start_m_1
+  and cus_cust_id in (select distinct user_id from RBA_TC_BACKTEST)
+;
+
+create or replace temp table VU_CREDIT
+as
+select
+   valid_from_dt
+  ,valid_to_dt
+  ,cus_cust_id as user_id
+  ,balance_amt as limite_usado
+  ,date(crd_credit_creation_dt) as f_emision_dt
+from `WHOWNER.BT_VU_CREDIT`
+where 1=1
+  and sit_site_id = 'MLB'
+  and crd_prod_def_type_sk = 3
+  and crd_credit_status not in ('PENDING','CANCELLED','PRECANCELLED','DEFAULTED','DISCARDED')
+  and valid_to_dt >= f_start
+  and cus_cust_id in (select distinct user_id from RBA_TC_BACKTEST)
+;
+
+create or replace temp table RBA_CROSS_SCR
+as
+select
+   valid_from_dt
+  ,valid_to_dt
+  ,dt_base_scr
+  ,user_id
+  ,cant_ifs
+  ,deuda_30d_tc
+  ,deuda_30d_clean
+  ,deuda_30d_garantia
+  ,deuda_30d_total
+  ,deuda_all_tc
+  ,deuda_all_clean
+  ,deuda_all_garantia
+  ,deuda_all_total
+  ,deuda_venc_over00_clean
+  ,deuda_venc_over00_tc
+  ,deuda_venc_over00_garantia
+  ,deuda_venc_over00_total
+  ,deuda_venc_over30_tc
+  ,deuda_venc_over30_clean
+  ,deuda_venc_over30_garantia
+  ,deuda_venc_over30_total
+from `SBOX_CREDITS_SB.RBA_CROSS_MLB_SCR_CARTERA_PECASTANHO`
+where 1=1
+  and valid_to_dt >= f_start_m_1
+;
+
+create or replace temp table JOINS
+as
+select
+   acc.*
+  ,bhv.* except(user_id, valid_from_dt, valid_to_dt)
+  ,upsell.* except(user_id, valid_from_dt, valid_to_dt)
+  ,coalesce(renta_mdl.nise, renta_mdl_hist.nise) as nise
+  ,coalesce(renta_mdl.renta_monto, renta_mdl_hist.renta_monto) as renta_monto
+  ,coalesce(renta_mdl.renta_source, renta_mdl_hist.renta_source) as renta_source
+  ,renta_hoy.* except(user_id)
+  ,renta.* except(user_id, valid_from_dt, valid_to_dt)
+  ,safe_cast(clasif.clasif as int64) as grupo_riesgo
+  ,coalesce(clasif.nivel_riesgo, "z. Sin rating") as nivel_riesgo
+  ,sellers.flag_sellers
+  ,rci_tc.* except(valid_from_dt, valid_to_dt, user_id)
+  ,rci_cc.* except(valid_from_dt, valid_to_dt, user_id)
+  ,scores.* except(f_cartera, user_id)
+  ,coalesce(param.rating_externo, 'G') as rating_externo
+  ,case
+    when coalesce(param.rating_externo, 'G') in ('A','B') then 'a. Muy bajo'
+    when coalesce(param.rating_externo, 'G') in ('C') then 'b. Bajo'
+    when coalesce(param.rating_externo, 'G') in ('D','E') then 'c. Medio'
+    when coalesce(param.rating_externo, 'G') in ('F') then 'd. Alto'
+    when coalesce(param.rating_externo, 'G') in ('G') then 'e. Muy alto'
+    else 'f. Otros' end as nivel_riesgo_externo
+  ,scr.* except(user_id, valid_from_dt, valid_to_dt)
+  ,crd.* except(user_id, valid_from_dt, valid_to_dt)
+  ,if(ito.cus_cust_id is not null, 1, 0) as flag_fraude_ito
+from RBA_TC_BACKTEST acc
+left join VU_MODEL_RATING_BHV bhv
+  on acc.user_id = bhv.user_id
+  and acc.f_acc_carga between bhv.valid_from_dt and bhv.valid_to_dt
+left join VU_MODEL_RATING_UPSELL upsell
+  on acc.user_id = upsell.user_id
+  and acc.f_acc_carga between upsell.valid_from_dt and upsell.valid_to_dt
+left join VU_ASSUMED_INCOME_MDL renta_mdl
+  on acc.user_id = renta_mdl.user_id
+  and acc.f_mes_acc_carga = (renta_mdl.period_dt + interval 1 month)
+left join VU_ASSUMED_INCOME_MDL renta_mdl_hist
+  on acc.user_id = renta_mdl_hist.user_id
+  and renta_mdl_hist.period_dt = '2024-07-01'
+left join VU_ASSUMED_INCOME renta
+  on acc.user_id = renta.user_id
+  and (acc.f_acc_carga >= renta.valid_from_dt and acc.f_acc_carga < renta.valid_to_dt)
+left join VU_ASSUMED_INCOME_HOY renta_hoy
+  on acc.user_id = renta_hoy.user_id
+left join VU_PROSPECT sellers
+  on acc.user_id = sellers.user_id
+  and (acc.f_acc_carga >= sellers.valid_from_dt and acc.f_acc_carga < sellers.valid_to_dt)
+left join VU_RCI_TC rci_tc
+  on acc.user_id = rci_tc.user_id
+  and (acc.f_acc_carga >= rci_tc.valid_from_dt and acc.f_acc_carga < rci_tc.valid_to_dt)
+left join VU_RCI_CC rci_cc
+  on acc.user_id = rci_cc.user_id
+  and (acc.f_acc_carga >= rci_cc.valid_from_dt and acc.f_acc_carga < rci_cc.valid_to_dt)
+left join `SBOX_CREDITS_SB.RBA_TC_MLB_CLASIF_BHV_UPSELL_PECASTANHO` clasif
+  on bhv.rating_bhv_tc_acc = clasif.bhv
+  and upsell.rating_upsell_tc_acc = clasif.upsell
+  and acc.f_mes_acc_carga between clasif.valid_from_dt and clasif.valid_to_dt
+left join VU_BUREAU scores
+  on acc.user_id = scores.user_id
+  and acc.f_mes_acc_carga = scores.f_cartera
+left join `meli-bi-data.SBOX_CREDITS_SB.PARAM_RATING_EXT_GERAL` param
+  on (scores.score_serasa >= param.serasa_min and scores.score_serasa <= param.serasa_max)
+  and (scores.score_bvs >= param.bvs_min and scores.score_bvs <= param.bvs_max)
+left join VU_CREDIT crd
+  on acc.user_id = crd.user_id
+  and (acc.f_acc_carga >= crd.valid_from_dt and acc.f_acc_carga < crd.valid_to_dt)
+left join `SBOX_COLLECTIONSDA.CCARD_MLB_USUARIOS_FRAUDE_DIC_2024` ito
+  on acc.user_id = ito.cus_cust_id
+left join RBA_CROSS_SCR scr
+  on acc.user_id = scr.user_id
+  and acc.f_acc_carga between scr.valid_from_dt and scr.valid_to_dt
+group by all
+;
+
+create or replace temp table SAIDA
+as
+select
+   *
+  ,safe_divide(safe_add(safe_multiply(coalesce(greatest(rci_real_tc, rci_teorico_tc),0), coalesce(renta_monto_acc,0)), safe_multiply(coalesce(greatest(rci_real_cc, rci_teorico_cc),0), coalesce(renta_monto_acc,0))), renta_monto_acc) as rci_conj
+  ,safe_divide(limite_usado, limit_amount_tc_acc_pre) as porc_iu_pre
+  ,safe_divide(limite_usado, limit_amount_tc_acc_post) as porc_iu_post
+from JOINS
+;
+
+create or replace table `meli-bi-data.SBOX_CREDITS_SB.RBA_TC_MLB_UPSELL_BACKTEST_BAU_2_PECASTANHO_TMP`
+options (
+  expiration_timestamp = timestamp_add(current_timestamp(), interval 24 hour)
 )
-select distinct
+as
+select
   *
-from saida00
+from SAIDA
+;
+
+drop table if exists `meli-bi-data.SBOX_CREDITS_SB.RBA_TC_MLB_UPSELL_BACKTEST_BAU_2_PECASTANHO`;
+
+create or replace table `meli-bi-data.SBOX_CREDITS_SB.RBA_TC_MLB_UPSELL_BACKTEST_BAU_2_PECASTANHO`
+(
+  campaign_id STRING
+  ,f_acc_carga DATE
+  ,f_mes_acc_carga DATE
+  ,f_acc_impacto DATE
+  ,risk_id STRING
+  ,audiencia STRING
+  ,produto STRING
+  ,policy STRING
+  ,policy_category STRING
+  ,policy_subcategory STRING
+  ,control_group_flag BOOL
+  ,campaign_group STRING
+  ,user_id INT64
+  ,limit_amount_tc_acc_post NUMERIC
+  ,limit_amount_tc_acc_pre NUMERIC
+  ,f_mes_vto_resumen_v3 DATE
+  ,f_vto_resumen_max_v3 DATE
+  ,monto_resumen_v3 DATE
+  ,total_pago_v3 DATE
+  ,pagado_antecipado_v3 DATE
+  ,f_cartera_v3 DATE
+  ,f_cartera_fin_mes_dt_v3 DATE
+  ,deuda_v3 NUMERIC
+  ,dpd_v3 INT64
+  ,deuda_over30_m_1_v3 NUMERIC
+  ,deuda_m_1_v3 NUMERIC
+  ,dpd_m_1_v3 INT64
+  ,deuda_over30_m_2_v3 NUMERIC
+  ,deuda_m_2_v3 NUMERIC
+  ,dpd_m_2_v3 INT64
+  ,deuda_over30_m_3_v3 NUMERIC
+  ,deuda_m_3_v3 NUMERIC
+  ,dpd_m_3_v3 INT64
+  ,deuda_over30_m1_v3 NUMERIC
+  ,deuda_m1_v3 NUMERIC
+  ,dpd_m1_v3 INT64
+  ,deuda_over30_m2_v3 NUMERIC
+  ,deuda_m2_v3 NUMERIC
+  ,dpd_m2_v3 INT64
+  ,deuda_over30_m3_v3 NUMERIC
+  ,deuda_m3_v3 NUMERIC
+  ,dpd_m3_v3 INT64
+  ,deuda_over30_m4_v3 NUMERIC
+  ,deuda_m4_v3 NUMERIC
+  ,dpd_m4_v3 INT64
+  ,deuda_over30_m5_v3 NUMERIC
+  ,deuda_m5_v3 NUMERIC
+  ,dpd_m5_v3 INT64
+  ,deuda_over30_m6_v3 NUMERIC
+  ,deuda_m6_v3 NUMERIC
+  ,dpd_m6_v3 INT64
+  ,deuda_over30_m7_v3 NUMERIC
+  ,deuda_m7_v3 NUMERIC
+  ,dpd_m7_v3 INT64
+  ,deuda_over30_m8_v3 NUMERIC
+  ,deuda_m8_v3 NUMERIC
+  ,dpd_m8_v3 INT64
+  ,deuda_over30_m9_v3 NUMERIC
+  ,deuda_m9_v3 NUMERIC
+  ,dpd_m9_v3 INT64
+  ,deuda_over30_m10_v3 NUMERIC
+  ,deuda_m10_v3 NUMERIC
+  ,dpd_m10_v3 INT64
+  ,deuda_over30_m11_v3 NUMERIC
+  ,deuda_m11_v3 NUMERIC
+  ,dpd_m11_v3 INT64
+  ,deuda_over30_m12_v3 NUMERIC
+  ,deuda_m12_v3 NUMERIC
+  ,dpd_m12_v3 INT64
+  ,tpv_m0_v3 NUMERIC
+  ,tpv_m_1_v3 NUMERIC
+  ,tpv_m_2_v3 NUMERIC
+  ,tpv_m_3_v3 NUMERIC
+  ,tpv_m1_v3 NUMERIC
+  ,tpv_m2_v3 NUMERIC
+  ,tpv_m3_v3 NUMERIC
+  ,tpv_m4_v3 NUMERIC
+  ,tpv_m5_v3 NUMERIC
+  ,tpv_m6_v3 NUMERIC
+  ,tpv_m7_v3 NUMERIC
+  ,tpv_m8_v3 NUMERIC
+  ,tpv_m9_v3 NUMERIC
+  ,tpv_m10_v3 NUMERIC
+  ,tpv_m11_v3 NUMERIC
+  ,tpv_m12_v3 NUMERIC
+  ,rating_bhv_tc_acc STRING
+  ,rating_upsell_tc_acc STRING
+  ,nise STRING
+  ,renta_monto FLOAT64
+  ,renta_source STRING
+  ,nise_hoy STRING
+  ,renta_monto_hoy NUMERIC
+  ,renta_source_hoy STRING
+  ,nise_acc STRING
+  ,renta_monto_acc NUMERIC
+  ,renta_source_acc STRING
+  ,grupo_riesgo INT64
+  ,nivel_riesgo STRING
+  ,flag_sellers INT64
+  ,porc_uso_real_tc NUMERIC
+  ,rci_real_tc NUMERIC
+  ,rci_teorico_tc NUMERIC
+  ,rci_real_cc NUMERIC
+  ,rci_teorico_cc NUMERIC
+  ,score_serasa NUMERIC
+  ,score_bvs NUMERIC
+  ,rating_externo STRING
+  ,nivel_riesgo_externo STRING
+  ,dt_base_scr DATE
+  ,cant_ifs INT64
+  ,deuda_30d_tc FLOAT64
+  ,deuda_30d_clean FLOAT64
+  ,deuda_30d_garantia FLOAT64
+  ,deuda_30d_total FLOAT64
+  ,deuda_all_tc FLOAT64
+  ,deuda_all_clean FLOAT64
+  ,deuda_all_garantia FLOAT64
+  ,deuda_all_total FLOAT64
+  ,deuda_venc_over00_clean FLOAT64
+  ,deuda_venc_over00_tc FLOAT64
+  ,deuda_venc_over00_garantia FLOAT64
+  ,deuda_venc_over00_total FLOAT64
+  ,deuda_venc_over30_tc FLOAT64
+  ,deuda_venc_over30_clean FLOAT64
+  ,deuda_venc_over30_garantia FLOAT64
+  ,deuda_venc_over30_total FLOAT64
+  ,limite_usado NUMERIC
+  ,f_emision_dt DATE
+  ,flag_fraude_ito INT64
+  ,rci_conj NUMERIC
+  ,porc_iu_pre NUMERIC
+  ,porc_iu_post NUMERIC
+)
+partition by f_mes_acc_carga
+cluster by policy_category
+;
+
+insert into `meli-bi-data.SBOX_CREDITS_SB.RBA_TC_MLB_UPSELL_BACKTEST_BAU_2_PECASTANHO` (
+  campaign_id
+  ,f_acc_carga
+  ,f_mes_acc_carga
+  ,f_acc_impacto
+  ,risk_id
+  ,audiencia
+  ,produto
+  ,policy
+  ,policy_category
+  ,policy_subcategory
+  ,control_group_flag
+  ,campaign_group
+  ,user_id
+  ,limit_amount_tc_acc_post
+  ,limit_amount_tc_acc_pre
+  ,f_mes_vto_resumen_v3
+  ,f_vto_resumen_max_v3
+  ,monto_resumen_v3
+  ,total_pago_v3
+  ,pagado_antecipado_v3
+  ,f_cartera_v3
+  ,f_cartera_fin_mes_dt_v3
+  ,deuda_v3
+  ,dpd_v3
+  ,deuda_over30_m_1_v3
+  ,deuda_m_1_v3
+  ,dpd_m_1_v3
+  ,deuda_over30_m_2_v3
+  ,deuda_m_2_v3
+  ,dpd_m_2_v3
+  ,deuda_over30_m_3_v3
+  ,deuda_m_3_v3
+  ,dpd_m_3_v3
+  ,deuda_over30_m1_v3
+  ,deuda_m1_v3
+  ,dpd_m1_v3
+  ,deuda_over30_m2_v3
+  ,deuda_m2_v3
+  ,dpd_m2_v3
+  ,deuda_over30_m3_v3
+  ,deuda_m3_v3
+  ,dpd_m3_v3
+  ,deuda_over30_m4_v3
+  ,deuda_m4_v3
+  ,dpd_m4_v3
+  ,deuda_over30_m5_v3
+  ,deuda_m5_v3
+  ,dpd_m5_v3
+  ,deuda_over30_m6_v3
+  ,deuda_m6_v3
+  ,dpd_m6_v3
+  ,deuda_over30_m7_v3
+  ,deuda_m7_v3
+  ,dpd_m7_v3
+  ,deuda_over30_m8_v3
+  ,deuda_m8_v3
+  ,dpd_m8_v3
+  ,deuda_over30_m9_v3
+  ,deuda_m9_v3
+  ,dpd_m9_v3
+  ,deuda_over30_m10_v3
+  ,deuda_m10_v3
+  ,dpd_m10_v3
+  ,deuda_over30_m11_v3
+  ,deuda_m11_v3
+  ,dpd_m11_v3
+  ,deuda_over30_m12_v3
+  ,deuda_m12_v3
+  ,dpd_m12_v3
+  ,tpv_m0_v3
+  ,tpv_m_1_v3
+  ,tpv_m_2_v3
+  ,tpv_m_3_v3
+  ,tpv_m1_v3
+  ,tpv_m2_v3
+  ,tpv_m3_v3
+  ,tpv_m4_v3
+  ,tpv_m5_v3
+  ,tpv_m6_v3
+  ,tpv_m7_v3
+  ,tpv_m8_v3
+  ,tpv_m9_v3
+  ,tpv_m10_v3
+  ,tpv_m11_v3
+  ,tpv_m12_v3
+  ,rating_bhv_tc_acc
+  ,rating_upsell_tc_acc
+  ,nise
+  ,renta_monto
+  ,renta_source
+  ,nise_hoy
+  ,renta_monto_hoy
+  ,renta_source_hoy
+  ,nise_acc
+  ,renta_monto_acc
+  ,renta_source_acc
+  ,grupo_riesgo
+  ,nivel_riesgo
+  ,flag_sellers
+  ,porc_uso_real_tc
+  ,rci_real_tc
+  ,rci_teorico_tc
+  ,rci_real_cc
+  ,rci_teorico_cc
+  ,score_serasa
+  ,score_bvs
+  ,rating_externo
+  ,nivel_riesgo_externo
+  ,dt_base_scr
+  ,cant_ifs
+  ,deuda_30d_tc
+  ,deuda_30d_clean
+  ,deuda_30d_garantia
+  ,deuda_30d_total
+  ,deuda_all_tc
+  ,deuda_all_clean
+  ,deuda_all_garantia
+  ,deuda_all_total
+  ,deuda_venc_over00_clean
+  ,deuda_venc_over00_tc
+  ,deuda_venc_over00_garantia
+  ,deuda_venc_over00_total
+  ,deuda_venc_over30_tc
+  ,deuda_venc_over30_clean
+  ,deuda_venc_over30_garantia
+  ,deuda_venc_over30_total
+  ,limite_usado
+  ,f_emision_dt
+  ,flag_fraude_ito
+  ,rci_conj
+  ,porc_iu_pre
+  ,porc_iu_post
+)
+select
+  *
+from `meli-bi-data.SBOX_CREDITS_SB.RBA_TC_MLB_UPSELL_BACKTEST_BAU_2_PECASTANHO_TMP`
 ;
