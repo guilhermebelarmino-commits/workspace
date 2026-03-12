@@ -1,74 +1,74 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Este arquivo fornece orientações ao Claude Code (claude.ai/code) ao trabalhar com o código neste repositório.
 
-## Project Overview
+## Visão Geral do Projeto
 
-This is a **BigQuery SQL analytics platform** for MercadoLibre Brazil (MLB) credit card portfolio management. It covers customer segmentation, risk assessment, and revenue optimization for campaigns: UPSELL, DOWNSELL, Parcelamento (installments), and P&L reporting.
+Esta é uma **plataforma de analytics SQL no BigQuery** para gestão da carteira de cartão de crédito do MercadoLibre Brasil (MLB). Cobre segmentação de clientes, avaliação de risco e otimização de receita para as campanhas: UPSELL, DOWNSELL, Parcelamento e relatórios de P&L.
 
-There are no build, lint, or test commands — all code is SQL executed directly against BigQuery.
+Não há comandos de build, lint ou teste — todo o código é SQL executado diretamente no BigQuery.
 
-## Repository Structure
+## Estrutura do Repositório
 
 ```
 codes/
-├── UPSELL/          # Credit limit increase campaigns
-│   ├── backtesting_upsell/    # AB test performance validation (step_1–step_N)
-│   ├── 202508–202602/         # Monthly campaign runs (YYYYMM folders)
-│   ├── upsell_bau.sql         # Standard upsell segmentation and eligibility
-│   ├── upsell_especial.sql    # Special offer targeting
-│   └── insert_campaign_cartera.sql  # Campaign insertion into production tables
-├── DOWNSELL/        # Credit limit reduction campaigns
-│   ├── backtesting_downsell/  # Performance validation
-│   ├── verdi_flows/           # Verdi integration scripts
-│   └── downsell.sql           # Main policy and rule logic
-├── parcelamento/    # Installment repricing strategy
-├── pl/              # Profit & Loss analysis (step_1, step_2, step_3)
-└── blacklist_insert.sql       # Customer exclusion logic
+├── UPSELL/          # Campanhas de aumento de limite
+│   ├── backtesting_upsell/    # Validação de performance de testes AB (step_1–step_N)
+│   ├── 202508–202602/         # Execuções mensais de campanha (pastas YYYYMM)
+│   ├── upsell_bau.sql         # Segmentação e elegibilidade padrão de upsell
+│   ├── upsell_especial.sql    # Segmentação de ofertas especiais
+│   └── insert_campaign_cartera.sql  # Inserção de campanha nas tabelas de produção
+├── DOWNSELL/        # Campanhas de redução de limite
+│   ├── backtesting_downsell/  # Validação de performance
+│   ├── verdi_flows/           # Scripts de integração com o Verdi
+│   └── downsell.sql           # Lógica principal de política e regras
+├── parcelamento/    # Estratégia de reprecificação de parcelamento
+├── pl/              # Análise de P&L (step_1, step_2, step_3)
+└── blacklist_insert.sql       # Lógica de exclusão de clientes
 
-tableros/            # Monitoring dashboards (mirrors codes/ structure)
+tableros/            # Dashboards de monitoramento (espelha a estrutura de codes/)
 ```
 
-## Data Architecture
+## Arquitetura de Dados
 
-**Source Layer (`WHOWNER.*`)** — raw fact/dimension tables:
-- `WHOWNER.BT_CCARD_ACCOUNT` — credit card account attributes
-- `WHOWNER.BT_CCARD_PROPOSAL` — customer proposals
-- `WHOWNER.BT_CCARD_LIMIT_HIST` — limit change history
-- `WHOWNER.BT_VU_CAMPAIGN` — campaign metadata
-- `WHOWNER.CC_FRIDAY_SCORING` — behavioral and risk scoring
+**Camada Fonte (`WHOWNER.*`)** — tabelas brutas de fatos/dimensões:
+- `WHOWNER.BT_CCARD_ACCOUNT` — atributos da conta de cartão de crédito
+- `WHOWNER.BT_CCARD_PROPOSAL` — propostas de clientes
+- `WHOWNER.BT_CCARD_LIMIT_HIST` — histórico de alterações de limite
+- `WHOWNER.BT_VU_CAMPAIGN` — metadados de campanha
+- `WHOWNER.CC_FRIDAY_SCORING` — scoring comportamental e de risco
 
-**Output Layer (`SBOX_CREDITS_SB.*`)** — processed analytics tables:
-- Campaign eligibility and segmentation results
-- Backtesting and impact measurement tables
-- Dashboard/monitoring output
+**Camada de Saída (`SBOX_CREDITS_SB.*`)** — tabelas analíticas processadas:
+- Resultados de elegibilidade e segmentação de campanhas
+- Tabelas de backtesting e medição de impacto
+- Output de dashboards e monitoramento
 
-**Temporary Layer (`TMP.*`)** — intermediate processing tables.
+**Camada Temporária (`TMP.*`)** — tabelas de processamento intermediário.
 
-## Key Patterns and Conventions
+## Padrões e Convenções
 
-**Monthly campaign cycle:** Files and tables follow `YYYYMM` naming (e.g., `202601`). Site is always `site_id = 'MLB'` (Brazil).
+**Ciclo mensal de campanha:** Arquivos e tabelas seguem a nomenclatura `YYYYMM` (ex.: `202601`). O site é sempre `site_id = 'MLB'` (Brasil).
 
-**Customer eligibility layers:**
-1. **Hard rules** — absolute exclusions (DPD thresholds, fraud flags, blacklists)
-2. **Soft rules** — risk-based filters (behavioral scoring, rating thresholds)
-3. **Campaign assignment** — BAU / ESPECIAL / PREFERENCIAL categories
+**Camadas de elegibilidade de clientes:**
+1. **Hard rules** — exclusões absolutas (limites de DPD, flags de fraude, blacklists)
+2. **Soft rules** — filtros baseados em risco (scoring comportamental, limiares de rating)
+3. **Atribuição de campanha** — categorias BAU / ESPECIAL / PREFERENCIAL
 
-**Backtesting pattern:** Multi-step SQL files (`step_1.sql` through `step_N.sql`) build up incrementally. Each step creates or inserts into a table consumed by the next.
+**Padrão de backtesting:** Arquivos SQL em múltiplos passos (`step_1.sql` até `step_N.sql`) construídos incrementalmente. Cada step cria ou insere em uma tabela consumida pelo próximo.
 
-**Key metrics computed:**
-- `cartera` — average portfolio balance
-- Revenue streams: interchange, revolving (`revolvente`), late fees (`mora`), installments (`parcelado`), overlimit (`sobrelimite`)
-- `cogs` — collection, processing, issuance costs
-- DPD (Days Past Due) buckets
-- AB test groups: `control` vs `impact`
+**Métricas principais calculadas:**
+- `cartera` — saldo médio da carteira
+- Fontes de receita: interchange, revolvente, mora, parcelado, sobrelimite
+- `cogs` — custos de cobrança, processamento e emissão
+- Buckets de DPD (Days Past Due)
+- Grupos de teste AB: `control` vs `impacto`
 
-**SQL style:** Heavy use of CTEs (`WITH` clauses), `QUALIFY` + window functions for deduplication, `SAFE_OFFSET` for array access, and `CASE WHEN` aggregations.
+**Estilo SQL:** Uso intenso de CTEs (cláusulas `WITH`), `QUALIFY` + funções de janela para deduplicação, `SAFE_OFFSET` para acesso a arrays e agregações com `CASE WHEN`.
 
-## Critical Context
+## Contexto Crítico
 
-- All queries target **BigQuery SQL dialect** (use `QUALIFY`, `EXCEPT()`, date functions like `DATE_DIFF`, `DATE_TRUNC`).
-- `parcelamento_fatura.sql` is the largest file (~15k lines); use `parcelamento_fatura_refatorado.sql` as the cleaner reference.
-- `backtesting_downsell/step_5.sql` is the largest backtesting file (~19k lines) and is the canonical performance measurement script.
-- Airflow orchestrates the `dash_resultado_downsell_airflow.sql` pipeline.
-- Verdi is an external flow management system integrated under `DOWNSELL/verdi_flows/`.
+- Todas as queries utilizam o **dialeto SQL do BigQuery** (use `QUALIFY`, `EXCEPT()`, funções de data como `DATE_DIFF`, `DATE_TRUNC`).
+- `parcelamento_fatura.sql` é o maior arquivo (~15k linhas); use `parcelamento_fatura_refatorado.sql` como referência mais limpa.
+- `backtesting_downsell/step_5.sql` é o maior arquivo de backtesting (~19k linhas) e é o script canônico de medição de performance.
+- O Airflow orquestra o pipeline `dash_resultado_downsell_airflow.sql`.
+- Verdi é um sistema externo de gestão de fluxos integrado em `DOWNSELL/verdi_flows/`.

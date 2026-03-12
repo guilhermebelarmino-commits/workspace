@@ -1,29 +1,29 @@
 # workspace
 
-BigQuery SQL analytics platform for MercadoLibre Brazil (MLB) credit card portfolio management. Covers customer segmentation, risk assessment, and revenue optimization across four domains:
+Plataforma de analytics SQL no BigQuery para gestão da carteira de cartão de crédito do MercadoLibre Brasil (MLB). Cobre segmentação de clientes, avaliação de risco e otimização de receita em quatro domínios:
 
-- **UPSELL** — credit limit increase campaigns
-- **DOWNSELL** — credit limit reduction campaigns
-- **Parcelamento** — installment repricing strategy
-- **P&L** — profit & loss portfolio analysis
+- **UPSELL** — campanhas de aumento de limite de crédito
+- **DOWNSELL** — campanhas de redução de limite de crédito
+- **Parcelamento** — estratégia de reprecificação de parcelamento
+- **P&L** — análise de resultado financeiro da carteira
 
-## Structure
+## Estrutura
 
 ```
 codes/
-├── UPSELL/             # Segmentation, eligibility, and campaign insertion scripts
-├── DOWNSELL/           # Policy rules, Verdi flow integrations, and dashboards
-├── parcelamento/       # Installment repricing logic
-├── pl/                 # P&L calculation (step_1 → step_2 → step_3)
+├── UPSELL/             # Scripts de segmentação, elegibilidade e inserção de campanha
+├── DOWNSELL/           # Regras de política, integrações Verdi e dashboards
+├── parcelamento/       # Lógica de reprecificação de parcelamento
+├── pl/                 # Cálculo de P&L (step_1 → step_2 → step_3)
 └── blacklist_insert.sql
 
-tableros/               # Monitoring and follow-up dashboards
+tableros/               # Dashboards de monitoramento e acompanhamento
 ```
 
-Each campaign folder contains monthly runs (`YYYYMM/`) and a `backtesting_*/` subfolder with multi-step validation scripts (`step_1.sql` → `step_N.sql`).
+Cada pasta de campanha contém execuções mensais (`YYYYMM/`) e uma subpasta `backtesting_*/` com scripts de validação em múltiplos passos (`step_1.sql` → `step_N.sql`).
 
 ## Stack
 
 - **Data warehouse:** Google BigQuery
-- **Orchestration:** Apache Airflow
-- **Flow management:** Verdi
+- **Orquestração:** Apache Airflow
+- **Gestão de fluxos:** Verdi
